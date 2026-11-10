@@ -1,0 +1,14 @@
+# Netlify web app (Next.js). API stays on Render — see docs/DEPLOYMENT.md.
+# Set API_INTERNAL_BASE_URL in the Netlify UI to the Render API HTTPS origin
+# before building; rebuild whenever it changes.
+
+[build]
+  base = "apps/web"
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"

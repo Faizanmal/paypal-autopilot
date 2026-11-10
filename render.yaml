@@ -8,7 +8,8 @@ services:
     region: singapore
     dockerfilePath: infra/docker/api.Dockerfile
     dockerContext: apps/api
-    dockerCommand: api
+    # Render overrides ENTRYPOINT+CMD; must include the entrypoint path.
+    dockerCommand: /docker-entrypoint.sh api
     preDeployCommand: /docker-entrypoint.sh migrate
     healthCheckPath: /ready
     autoDeployTrigger: "off"
@@ -73,7 +74,7 @@ services:
     numInstances: 1
     dockerfilePath: infra/docker/api.Dockerfile
     dockerContext: apps/api
-    dockerCommand: worker
+    dockerCommand: /docker-entrypoint.sh worker
     autoDeployTrigger: "off"
     envVars: &worker-env
       - key: CELERY_WORKER_CONCURRENCY
@@ -123,7 +124,7 @@ services:
     numInstances: 1
     dockerfilePath: infra/docker/api.Dockerfile
     dockerContext: apps/api
-    dockerCommand: scheduler
+    dockerCommand: /docker-entrypoint.sh scheduler
     autoDeployTrigger: "off"
     envVars: *worker-env
 
