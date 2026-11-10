@@ -8,7 +8,7 @@ from app.modules.ai.providers.gemini import GeminiPlanner
 from app.modules.ai.providers.groq import GroqPlanner
 from app.modules.ai.providers.openai import OpenAIPlanner
 
-# Priority for AI_PROVIDER=auto and for cascading after a pinned provider.
+# Auto priority; a pinned provider goes first, followed by the other configured providers.
 LLM_CHAIN: tuple[AIProviderName, ...] = (
     AIProviderName.GROQ,
     AIProviderName.GEMINI,
@@ -41,8 +41,7 @@ def llm_planners_for(settings: Settings) -> list[CompatibleChatPlanner]:
     if settings.ai_provider is AIProviderName.AUTO:
         names = list(LLM_CHAIN)
     elif settings.ai_provider in LLM_CHAIN:
-        start = LLM_CHAIN.index(settings.ai_provider)
-        names = list(LLM_CHAIN[start:])
+        names = [settings.ai_provider, *(name for name in LLM_CHAIN if name is not settings.ai_provider)]
     else:
         names = []
     return [_build_llm(name, keys[name]) for name in names if keys[name]]
@@ -51,7 +50,10 @@ def llm_planners_for(settings: Settings) -> list[CompatibleChatPlanner]:
 def get_planner(settings: Settings) -> Planner:
     planners = llm_planners_for(settings)
     if not planners:
-        return RuleBasedFallbackProvider()
+        fallback = RuleBasedFallbackProvider()
+        if settings.ai_credentials_configured and settings.ai_provider is AIProviderName.FALLBACK_RULES:
+            fallback.provider_label = "Fallback parser (AI_PROVIDER=fallback_rules explicitly selected)"
+        return fallback
     if len(planners) == 1 and settings.ai_provider is not AIProviderName.AUTO:
         # Still wrap so transport failures fall through to rules.
         return CascadingPlanner(planners)

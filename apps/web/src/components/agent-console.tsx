@@ -66,6 +66,11 @@ export function AgentConsole({ initialRuns }: { initialRuns: AgentRun[] }) {
     "Show invoices overdue by more than 14 days.",
   ];
   const run = current;
+  const explanation = [...new Set((run?.explanation ?? "").split("\n"))]
+    .filter((line) => line !== run?.provider_label).join("\n");
+  const clarifications = [...new Set(run?.clarifications ?? [])].filter(
+    (item) => !explanation.includes(item),
+  );
   const canConfirm = run?.status === "pending_confirmation";
   const canRetry = run?.status === "failed" || run?.status === "blocked" || run?.status === "executing";
   const canCancel = ["pending_confirmation", "failed", "blocked", "executing", "waiting"].includes(run?.status ?? "");
@@ -112,12 +117,12 @@ export function AgentConsole({ initialRuns }: { initialRuns: AgentRun[] }) {
             <p aria-live="polite" className="mt-1 text-sm text-muted-foreground">Status: {run.status}</p>
             {refreshError ? <p role="status" className="text-sm text-muted-foreground">{refreshError}</p> : null}
           </div>
-          {run.explanation ? (
-            <pre className="whitespace-pre-wrap text-sm">{run.explanation}</pre>
+          {explanation ? (
+            <pre className="whitespace-pre-wrap text-sm">{explanation}</pre>
           ) : null}
-          {run.clarifications.length > 0 ? (
+          {clarifications.length > 0 ? (
             <ul className="list-disc pl-5 text-sm">
-              {run.clarifications.map((item) => (
+              {clarifications.map((item) => (
                 <li key={item}>{item}</li>
               ))}
             </ul>

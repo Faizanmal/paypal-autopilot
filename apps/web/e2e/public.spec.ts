@@ -19,9 +19,11 @@ test("register page is keyboard reachable and can switch theme", async ({ page }
 });
 
 test("workspace routes require a session", async ({ page }) => {
-  await page.goto("/app/invoices");
-  await expect(page).toHaveURL(/\/login$/);
-  await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
+  for (const path of ["/app", "/app/invoices"]) {
+    await page.goto(path);
+    await expect(page).toHaveURL(/\/login$/);
+    await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
+  }
 });
 
 test("registration opens the workspace", async ({ page }) => {

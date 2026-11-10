@@ -588,8 +588,8 @@ def _join(label: str, *parts: str | list[str]) -> str:
     lines = [label]
     for part in parts:
         if isinstance(part, str):
-            if part:
+            if part and part not in lines:
                 lines.append(part)
         else:
-            lines.extend(part)
+            lines.extend(item for item in part if item and item not in lines)
     return "\n".join(lines)

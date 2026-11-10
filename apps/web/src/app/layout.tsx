@@ -7,7 +7,7 @@ export const metadata: Metadata = {
     "AI-planned, approval-gated financial workflows for freelancers and small businesses. Sandbox only.",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html
       lang="en"

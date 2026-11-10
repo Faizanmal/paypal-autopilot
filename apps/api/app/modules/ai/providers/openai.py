@@ -9,6 +9,7 @@ OPENAI_ENDPOINT = "https://api.openai.com/v1/chat/completions"
 
 
 class OpenAIPlanner(CompatibleChatPlanner):
+    supports_json_schema = True
     provider = "openai"
     provider_label = f"OpenAI {OPENAI_PLANNING_MODEL}"
     model = OPENAI_PLANNING_MODEL

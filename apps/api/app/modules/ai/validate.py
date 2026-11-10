@@ -42,6 +42,75 @@ def _fail(code: str, message: str, clarifications: list[str] | None = None) -> V
 
 
 def validate_plan(draft: WorkflowPlanDraft, instruction: str) -> ValidationResult:
+    normalization = sanitize_plan_arguments(draft, instruction)
+    if not normalization.ok:
+        return normalization
+    return _validate_sanitized_plan(draft, instruction)
+
+
+def sanitize_plan_arguments(draft: WorkflowPlanDraft, instruction: str) -> ValidationResult:
+    """Normalize provider formatting only; identities and policy remain server-owned.
+
+    Scan unknown values for injection before discarding them. Empty identifiers
+    are harmless model placeholders; false/zero/nonempty collections are not.
+    There is no allowlisted date field, so date/due_date are never executed.
+    """
+    def strip_empty_identities(arguments):
+        if isinstance(arguments, list):
+            return all(strip_empty_identities(value) for value in arguments)
+        if not isinstance(arguments, dict):
+            return True
+        for key, value in list(arguments.items()):
+            if forbidden_argument_key(key):
+                if value is None or (isinstance(value, str) and not value.strip()):
+                    del arguments[key]
+                else:
+                    return False
+            elif not strip_empty_identities(value):
+                return False
+        return True
+
+    cleaned = draft.model_copy(deep=True)
+    for step in cleaned.steps:
+        if not strip_empty_identities(step.arguments):
+            return _fail("untrusted_argument", "The plan included an identity or secret. Nothing was executed.")
+    if contains_injection(instruction) or contains_injection(cleaned.model_dump_json()):
+        return _fail("prompt_injection", "The plan included instructions to override policy or payment status. "
+                     "Nothing was executed.")
+    name_targets = {
+        ActionType.CREATE_PROJECT: "project_name",
+        ActionType.GET_PROJECT_STATUS: "project_name",
+        ActionType.CREATE_MILESTONE: "milestone_name",
+        ActionType.LOOKUP_CUSTOMER: "customer_name",
+        ActionType.PREPARE_PAYOUT: "recipient_name",
+        ActionType.EXPLAIN_POLICY: "recipient_name",
+        ActionType.RESUME_PAYOUT: "recipient_name",
+        ActionType.ANALYZE_CONTRACT: "contract_name",
+        ActionType.CREATE_MILESTONES: "contract_name",
+    }
+    for step in cleaned.steps:
+        arguments = step.arguments
+        aliases = {"currency": "currency_code"}
+        if step.action_type in name_targets:
+            aliases["name"] = name_targets[step.action_type]
+        for alias, target in aliases.items():
+            value = arguments.get(alias)
+            if value is None or value == "":
+                continue
+            existing = arguments.get(target)
+            if existing is not None and existing != "" and existing != value:
+                return _fail("ambiguous", f"Conflicting {alias} and {target} values need clarification.")
+            arguments[target] = value
+        step.arguments = {
+            key: value for key, value in arguments.items()
+            if key in ALLOWED_ARGUMENT_KEYS and value is not None
+        }
+    for original, normalized in zip(draft.steps, cleaned.steps, strict=True):
+        original.arguments = normalized.arguments
+    return ValidationResult(ok=True)
+
+
+def _validate_sanitized_plan(draft: WorkflowPlanDraft, instruction: str) -> ValidationResult:
     if contains_injection(instruction) or contains_injection(draft.model_dump_json()):
         return _fail(
             "prompt_injection",

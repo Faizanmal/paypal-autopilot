@@ -37,6 +37,15 @@ _INJECTION = re.compile(
 
 _FORBIDDEN_ARGUMENT_KEYS = frozenset(
     {
+        "id",
+        "api_key",
+        "access_token",
+        "refresh_token",
+        "password",
+        "secret_key",
+        "milestone_id",
+        "contract_id",
+        "paypal_invoice_id",
         "workspace_id",
         "user_id",
         "customer_id",
