@@ -5,8 +5,8 @@ import uuid
 from fastapi import APIRouter, Request
 
 from app.api.deps import CurrentPrincipal, DbSession
-from app.core.config import AppEnv, get_settings
-from app.core.errors import NotFoundError, PolicyViolationError
+from app.core.config import get_settings
+from app.core.errors import PolicyViolationError
 from app.integrations.paypal.client import get_paypal_client
 from app.integrations.paypal.diagnostics import CapabilityReport, build_capability_report
 from app.integrations.paypal.webhooks import PayPalWebhookVerifier
@@ -113,12 +113,11 @@ async def post_capture_order(order_id: uuid.UUID, principal: CurrentPrincipal, d
 
 @router.get("/integrations/paypal/diagnostics", response_model=CapabilityReport)
 async def get_paypal_diagnostics(principal: CurrentPrincipal) -> CapabilityReport:
-    settings = get_settings()
-    if settings.app_env is AppEnv.PRODUCTION:
-        raise NotFoundError("Not found.")
+    # Owner-only, read-only (OAuth + GET probes). Required on Settings / PayPal
+    # screens in production-style hosts (Render) where APP_ENV=production.
     if principal.role != "owner":
         raise PolicyViolationError("Only the workspace owner can view PayPal diagnostics.")
-    return await build_capability_report(settings, get_paypal_client())
+    return await build_capability_report(get_settings(), get_paypal_client())
 
 
 @router.post("/webhooks/paypal", response_model=WebhookIngestOut)

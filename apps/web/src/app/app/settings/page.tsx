@@ -2,7 +2,7 @@ import Link from "next/link";
 
 import { PageHeader } from "@/components/page-header";
 import { PolicyControls } from "@/components/policy-controls";
-import { serverApi } from "@/lib/api/server";
+import { serverApi, serverApiOptional } from "@/lib/api/server";
 import type {
   AuthSession,
   CapabilityReport,
@@ -20,7 +20,7 @@ export default async function SettingsPage() {
     serverApi<ItemList<WorkspaceMember>>("/api/v1/workspace/members"),
     serverApi<WorkspaceRuntime>("/api/v1/workspace/runtime"),
     serverApi<FinancialPolicy>("/api/v1/financial-policy"),
-    serverApi<CapabilityReport>("/api/v1/integrations/paypal/diagnostics"),
+    serverApiOptional<CapabilityReport>("/api/v1/integrations/paypal/diagnostics"),
   ]);
 
   return (

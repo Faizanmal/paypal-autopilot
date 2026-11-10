@@ -19,3 +19,12 @@ export async function serverApi<T>(path: string): Promise<T | null> {
     throw error;
   }
 }
+
+/** Optional endpoints: return null on API failure instead of crashing the RSC tree. */
+export async function serverApiOptional<T>(path: string): Promise<T | null> {
+  try {
+    return await serverApi<T>(path);
+  } catch {
+    return null;
+  }
+}

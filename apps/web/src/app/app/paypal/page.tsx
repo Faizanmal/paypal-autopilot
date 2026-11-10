@@ -1,6 +1,6 @@
 import { PayoutDecision } from "@/components/payout-decision";
 import { PayoutIntentForm } from "@/components/payout-intent-form";
-import { serverApi } from "@/lib/api/server";
+import { serverApi, serverApiOptional } from "@/lib/api/server";
 import type {
   CapabilityReport,
   Contractor,
@@ -14,7 +14,7 @@ export const instant = false;
 
 export default async function PayPalPage() {
   const [report, capability, payouts, contractors, invoices] = await Promise.all([
-    serverApi<CapabilityReport>("/api/v1/integrations/paypal/diagnostics"),
+    serverApiOptional<CapabilityReport>("/api/v1/integrations/paypal/diagnostics"),
     serverApi<PayoutCapability>("/api/v1/payouts/capability"),
     serverApi<ItemList<PayoutRequest>>("/api/v1/payout-requests"),
     serverApi<ItemList<Contractor>>("/api/v1/contractors"),
