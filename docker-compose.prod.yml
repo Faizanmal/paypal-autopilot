@@ -1,0 +1,147 @@
+# Production-style compose for sandbox deployments.
+# Does not publish or deploy anything by itself.
+# Usage (after filling .env): docker compose -f docker-compose.prod.yml config
+# Authorized deploy only: docker compose -f docker-compose.prod.yml up -d --build
+name: paypal-autopilot-prod
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-autopilot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-autopilot}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-autopilot} -d $${POSTGRES_DB:-autopilot}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # No host ports: keep Postgres on the compose network only.
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: ../../infra/docker/api.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      APP_ENV: production
+      PAYPAL_ENV: sandbox
+      ALLOW_LIVE_PAYPAL: "false"
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-autopilot}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-autopilot}
+      DATABASE_URL_SYNC: postgresql+psycopg://${POSTGRES_USER:-autopilot}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-autopilot}
+      REDIS_URL: redis://redis:6379/0
+      CORS_ORIGINS: ${CORS_ORIGINS:?CORS_ORIGINS is required for production}
+      PUBLIC_API_BASE_URL: ${PUBLIC_API_BASE_URL:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: ["api"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+    ports:
+      - "127.0.0.1:${API_HOST_PORT:-8003}:8000"
+
+  worker:
+    build:
+      context: ./apps/api
+      dockerfile: ../../infra/docker/api.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      APP_ENV: production
+      PAYPAL_ENV: sandbox
+      ALLOW_LIVE_PAYPAL: "false"
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-autopilot}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-autopilot}
+      DATABASE_URL_SYNC: postgresql+psycopg://${POSTGRES_USER:-autopilot}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-autopilot}
+      REDIS_URL: redis://redis:6379/0
+      CORS_ORIGINS: ${CORS_ORIGINS:?CORS_ORIGINS is required for production}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    command: ["worker"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.workers.health"]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 90s
+
+  scheduler:
+    build:
+      context: ./apps/api
+      dockerfile: ../../infra/docker/api.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      APP_ENV: production
+      PAYPAL_ENV: sandbox
+      ALLOW_LIVE_PAYPAL: "false"
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-autopilot}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-autopilot}
+      DATABASE_URL_SYNC: postgresql+psycopg://${POSTGRES_USER:-autopilot}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-autopilot}
+      REDIS_URL: redis://redis:6379/0
+      CORS_ORIGINS: ${CORS_ORIGINS:?CORS_ORIGINS is required for production}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    command: ["scheduler"]
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: ../../infra/docker/web.Dockerfile
+      args:
+        API_INTERNAL_BASE_URL: http://api:8000
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:?NEXT_PUBLIC_API_BASE_URL is required}
+        NEXT_PUBLIC_AG_STUDIO_LICENSE_KEY: ${NEXT_PUBLIC_AG_STUDIO_LICENSE_KEY:-}
+    restart: unless-stopped
+    environment:
+      API_INTERNAL_BASE_URL: http://api:8000
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL}
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${WEB_HOST_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+volumes:
+  postgres_data:
+  redis_data:

@@ -1,0 +1,147 @@
+name: paypal-autopilot
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-autopilot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-autopilot}
+      POSTGRES_DB: ${POSTGRES_DB:-autopilot}
+    ports:
+      # Host 5432 is often already taken by a native Windows PostgreSQL install.
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-autopilot} -d $${POSTGRES_DB:-autopilot}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      # Host 6379 is often already taken by a native Redis install.
+      - "${REDIS_HOST_PORT:-6380}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: ../../infra/docker/api.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-autopilot}:${POSTGRES_PASSWORD:-autopilot}@postgres:5432/${POSTGRES_DB:-autopilot}
+      DATABASE_URL_SYNC: postgresql+psycopg://${POSTGRES_USER:-autopilot}:${POSTGRES_PASSWORD:-autopilot}@postgres:5432/${POSTGRES_DB:-autopilot}
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "${API_HOST_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./apps/api:/app
+      - ./apps/api/scripts/docker-entrypoint.sh:/docker-entrypoint.sh:ro
+    entrypoint: ["/bin/sh", "/docker-entrypoint.sh"]
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  worker:
+    build:
+      context: ./apps/api
+      dockerfile: ../../infra/docker/api.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-autopilot}:${POSTGRES_PASSWORD:-autopilot}@postgres:5432/${POSTGRES_DB:-autopilot}
+      DATABASE_URL_SYNC: postgresql+psycopg://${POSTGRES_USER:-autopilot}:${POSTGRES_PASSWORD:-autopilot}@postgres:5432/${POSTGRES_DB:-autopilot}
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./apps/api:/app
+      - ./apps/api/scripts/docker-entrypoint.sh:/docker-entrypoint.sh:ro
+    entrypoint: ["/bin/sh", "/docker-entrypoint.sh"]
+    command: ["celery", "-A", "app.workers.celery_app", "worker", "--loglevel=INFO"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.workers.health"]
+      interval: 20s
+      timeout: 30s
+      retries: 5
+      start_period: 90s
+
+  scheduler:
+    build:
+      context: ./apps/api
+      dockerfile: ../../infra/docker/api.Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-autopilot}:${POSTGRES_PASSWORD:-autopilot}@postgres:5432/${POSTGRES_DB:-autopilot}
+      DATABASE_URL_SYNC: postgresql+psycopg://${POSTGRES_USER:-autopilot}:${POSTGRES_PASSWORD:-autopilot}@postgres:5432/${POSTGRES_DB:-autopilot}
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./apps/api:/app
+      - ./apps/api/scripts/docker-entrypoint.sh:/docker-entrypoint.sh:ro
+    entrypoint: ["/bin/sh", "/docker-entrypoint.sh"]
+    command: ["celery", "-A", "app.workers.celery_app", "beat", "--loglevel=INFO"]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import pathlib; raise SystemExit(0 if b'beat' in pathlib.Path('/proc/1/cmdline').read_bytes() else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  web:
+    # Local web stays on the Node image + npm run dev. Production builds use
+    # infra/docker/web.Dockerfile via docker-compose.prod.yml.
+    image: node:22-slim
+    working_dir: /app
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+      API_INTERNAL_BASE_URL: http://api:8000
+    ports:
+      - "${WEB_HOST_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    volumes:
+      - ./apps/web:/app
+      - web_node_modules:/app/node_modules
+    command: ["bash", "-lc", "npm install && npm run dev -- --hostname 0.0.0.0 --port 3000"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 45s
+
+volumes:
+  postgres_data:
+  web_node_modules:

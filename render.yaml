@@ -1,0 +1,156 @@
+# Hackathon backend Blueprint (ADR-015). Creates paid resources only when deployed.
+# Web stays on Netlify. Follow docs/DEPLOYMENT.md before using this file.
+services:
+  - type: web
+    name: paypal-autopilot-api
+    runtime: docker
+    plan: 0.5c-512mb
+    region: singapore
+    dockerfilePath: infra/docker/api.Dockerfile
+    dockerContext: apps/api
+    dockerCommand: api
+    preDeployCommand: /docker-entrypoint.sh migrate
+    healthCheckPath: /ready
+    autoDeployTrigger: "off"
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: PORT
+        value: "8000"
+      - key: PAYPAL_ENV
+        value: sandbox
+      - key: ALLOW_LIVE_PAYPAL
+        value: "false"
+      - key: PAYPAL_PAYOUTS_EXECUTION
+        value: "false"
+      - key: AI_PROVIDER
+        value: auto
+      - key: SECRET_KEY
+        generateValue: true
+      - key: CORS_ORIGINS
+        sync: false
+      - key: PUBLIC_API_BASE_URL
+        sync: false
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: PAYPAL_WEBHOOK_ID
+        sync: false
+      - key: PAYPAL_SANDBOX_BUSINESS_EMAIL
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: STUDIO_AI_MODEL
+        value: gpt-4o-mini
+      - key: RENDER_API_KEY
+        sync: false
+      - key: RENDER_REPORT_TASK
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: paypal-autopilot-db
+          property: connectionString
+      - key: DATABASE_URL_SYNC
+        fromDatabase:
+          name: paypal-autopilot-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: paypal-autopilot-broker
+          property: connectionString
+
+  - type: worker
+    name: paypal-autopilot-worker
+    runtime: docker
+    plan: 0.5c-512mb
+    region: singapore
+    numInstances: 1
+    dockerfilePath: infra/docker/api.Dockerfile
+    dockerContext: apps/api
+    dockerCommand: worker
+    autoDeployTrigger: "off"
+    envVars: &worker-env
+      - key: CELERY_WORKER_CONCURRENCY
+        value: "1"
+      - key: APP_ENV
+        value: production
+      - key: PAYPAL_ENV
+        value: sandbox
+      - key: ALLOW_LIVE_PAYPAL
+        value: "false"
+      - key: PAYPAL_PAYOUTS_EXECUTION
+        value: "false"
+      - key: AI_PROVIDER
+        value: auto
+      - key: SECRET_KEY
+        fromService: { type: web, name: paypal-autopilot-api, envVarKey: SECRET_KEY }
+      - key: CORS_ORIGINS
+        fromService: { type: web, name: paypal-autopilot-api, envVarKey: CORS_ORIGINS }
+      - key: PUBLIC_API_BASE_URL
+        fromService: { type: web, name: paypal-autopilot-api, envVarKey: PUBLIC_API_BASE_URL }
+      - key: PAYPAL_CLIENT_ID
+        fromService: { type: web, name: paypal-autopilot-api, envVarKey: PAYPAL_CLIENT_ID }
+      - key: PAYPAL_CLIENT_SECRET
+        fromService: { type: web, name: paypal-autopilot-api, envVarKey: PAYPAL_CLIENT_SECRET }
+      - key: PAYPAL_WEBHOOK_ID
+        fromService: { type: web, name: paypal-autopilot-api, envVarKey: PAYPAL_WEBHOOK_ID }
+      - key: PAYPAL_SANDBOX_BUSINESS_EMAIL
+        fromService: { type: web, name: paypal-autopilot-api, envVarKey: PAYPAL_SANDBOX_BUSINESS_EMAIL }
+      - key: GROQ_API_KEY
+        fromService: { type: web, name: paypal-autopilot-api, envVarKey: GROQ_API_KEY }
+      - key: GEMINI_API_KEY
+        fromService: { type: web, name: paypal-autopilot-api, envVarKey: GEMINI_API_KEY }
+      - key: OPENAI_API_KEY
+        fromService: { type: web, name: paypal-autopilot-api, envVarKey: OPENAI_API_KEY }
+      - key: DATABASE_URL
+        fromDatabase: { name: paypal-autopilot-db, property: connectionString }
+      - key: DATABASE_URL_SYNC
+        fromDatabase: { name: paypal-autopilot-db, property: connectionString }
+      - key: REDIS_URL
+        fromService: { type: keyvalue, name: paypal-autopilot-broker, property: connectionString }
+
+  - type: worker
+    name: paypal-autopilot-scheduler
+    runtime: docker
+    plan: 0.5c-512mb
+    region: singapore
+    numInstances: 1
+    dockerfilePath: infra/docker/api.Dockerfile
+    dockerContext: apps/api
+    dockerCommand: scheduler
+    autoDeployTrigger: "off"
+    envVars: *worker-env
+
+  - type: workflow
+    name: paypal-autopilot-reports
+    runtime: python
+    region: singapore
+    rootDir: apps/api
+    buildCommand: uv sync --frozen --no-dev
+    startCommand: .venv/bin/python -m app.workers.render_reports
+    autoDeployTrigger: "off"
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.13.18"
+
+  - type: keyvalue
+    name: paypal-autopilot-broker
+    plan: 256mb
+    region: singapore
+    maxmemoryPolicy: noeviction
+    ipAllowList: []
+
+databases:
+  - name: paypal-autopilot-db
+    plan: 0.1c-256mb
+    region: singapore
+    postgresMajorVersion: "16"
+    databaseName: autopilot
+    user: autopilot
+    ipAllowList: []

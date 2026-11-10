@@ -1,0 +1,55 @@
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Local-only documentation and archived artifacts
+/internal-docs/
+/temp_e/
+
+# Node / Next.js
+.cache/
+node_modules/
+apps/web/.next/
+apps/web/out/
+apps/web/next-env.d.ts
+.pnpm-store/
+npm-debug.log*
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+apps/api/.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+celerybeat-schedule*
+
+# Playwright
+apps/web/test-results/
+apps/web/playwright-report/
+apps/web/blob-report/
+
+# Build artifacts
+dist/
+build/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+audit_pytest.txt
+audit_playwright.txt
+
+# Docker local volumes (if bind-mounted locally)
+infra/docker/volumes/

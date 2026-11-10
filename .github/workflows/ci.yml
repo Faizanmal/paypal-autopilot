@@ -1,0 +1,89 @@
+name: Verify project
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      APP_ENV: test
+      SECRET_KEY: ci-only-secret-key-not-for-production
+      DATABASE_URL: postgresql+asyncpg://autopilot:autopilot@localhost:5433/autopilot_test
+      DATABASE_URL_SYNC: postgresql+psycopg://autopilot:autopilot@localhost:5433/autopilot_test
+      REDIS_URL: redis://localhost:6380/0
+      PAYPAL_ENV: sandbox
+      PAYPAL_PAYOUTS_EXECUTION: 'false'
+      AI_PROVIDER: fallback_rules
+      CI: 'true'
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: autopilot
+          POSTGRES_PASSWORD: autopilot
+          POSTGRES_DB: autopilot_test
+        ports: ['5433:5432']
+        options: >-
+          --health-cmd "pg_isready -U autopilot -d autopilot_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ['6380:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Install API dependencies
+        working-directory: apps/api
+        run: uv sync --frozen
+      - name: Check and test API
+        working-directory: apps/api
+        run: |
+          uv run ruff check .
+          uv run mypy app
+          uv run pytest -q
+      - name: Install web dependencies
+        working-directory: apps/web
+        run: npm ci
+      - name: Check and build web
+        working-directory: apps/web
+        run: |
+          npm run lint
+          npm run typecheck
+          npm run test:unit
+          npm run build
+          npx playwright install --with-deps chromium
+      - name: Start API
+        working-directory: apps/api
+        run: |
+          uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/autopilot-api.log 2>&1 &
+          for attempt in $(seq 1 30); do
+            if curl --fail http://127.0.0.1:8000/ready; then exit 0; fi
+            sleep 2
+          done
+          cat /tmp/autopilot-api.log
+          exit 1
+      - name: Test browser workflows
+        working-directory: apps/web
+        run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: browser-test-results
+          path: |
+            apps/web/test-results
+            apps/web/playwright-report
+            /tmp/autopilot-api.log

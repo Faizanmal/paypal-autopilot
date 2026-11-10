@@ -1,0 +1,58 @@
+from __future__ import annotations
+
+from app.core.config import AIProviderName, Settings
+from app.modules.ai.providers.cascade import CascadingPlanner
+from app.modules.ai.providers.compatible import CompatibleChatPlanner
+from app.modules.ai.providers.fallback import RuleBasedFallbackProvider
+from app.modules.ai.providers.gemini import GeminiPlanner
+from app.modules.ai.providers.groq import GroqPlanner
+from app.modules.ai.providers.openai import OpenAIPlanner
+
+# Priority for AI_PROVIDER=auto and for cascading after a pinned provider.
+LLM_CHAIN: tuple[AIProviderName, ...] = (
+    AIProviderName.GROQ,
+    AIProviderName.GEMINI,
+    AIProviderName.OPENAI,
+)
+
+Planner = RuleBasedFallbackProvider | CompatibleChatPlanner | CascadingPlanner
+
+
+def _build_llm(name: AIProviderName, key: str) -> CompatibleChatPlanner:
+    if name is AIProviderName.GROQ:
+        return GroqPlanner(key)
+    if name is AIProviderName.GEMINI:
+        return GeminiPlanner(key)
+    return OpenAIPlanner(key)
+
+
+def configured_llm_keys(settings: Settings) -> dict[AIProviderName, str]:
+    return {
+        AIProviderName.GROQ: settings.groq_api_key.get_secret_value().strip(),
+        AIProviderName.GEMINI: settings.gemini_api_key.get_secret_value().strip(),
+        AIProviderName.OPENAI: settings.openai_api_key.get_secret_value().strip(),
+    }
+
+
+def llm_planners_for(settings: Settings) -> list[CompatibleChatPlanner]:
+    keys = configured_llm_keys(settings)
+    if settings.ai_provider is AIProviderName.FALLBACK_RULES:
+        return []
+    if settings.ai_provider is AIProviderName.AUTO:
+        names = list(LLM_CHAIN)
+    elif settings.ai_provider in LLM_CHAIN:
+        start = LLM_CHAIN.index(settings.ai_provider)
+        names = list(LLM_CHAIN[start:])
+    else:
+        names = []
+    return [_build_llm(name, keys[name]) for name in names if keys[name]]
+
+
+def get_planner(settings: Settings) -> Planner:
+    planners = llm_planners_for(settings)
+    if not planners:
+        return RuleBasedFallbackProvider()
+    if len(planners) == 1 and settings.ai_provider is not AIProviderName.AUTO:
+        # Still wrap so transport failures fall through to rules.
+        return CascadingPlanner(planners)
+    return CascadingPlanner(planners)
