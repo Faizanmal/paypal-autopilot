@@ -6,15 +6,19 @@ import re
 from dataclasses import dataclass, field
 from decimal import Decimal
 
+from pydantic import ValidationError
+
 from app.core.config import SUPPORTED_CURRENCIES
 from app.core.errors import ValidationFailedError
 from app.core.money import parse_money
+from app.modules.ai.milestones import expand_direct_milestones, requested_milestone_count
 from app.modules.ai.schemas import (
     ALLOWED_ARGUMENT_KEYS,
     APPROVAL_ACTIONS,
     MONEY_ACTIONS,
     READ_ONLY_ACTIONS,
     ActionType,
+    MilestonePlanDraft,
     WorkflowPlanDraft,
 )
 from app.modules.ai.security import contains_injection, forbidden_argument_key
@@ -45,6 +49,11 @@ def validate_plan(draft: WorkflowPlanDraft, instruction: str) -> ValidationResul
     normalization = sanitize_plan_arguments(draft, instruction)
     if not normalization.ok:
         return normalization
+    try:
+        expand_direct_milestones(draft, instruction)
+    except (ValidationFailedError, ValidationError) as exc:
+        message = exc.message if isinstance(exc, ValidationFailedError) else "The milestone plan is invalid."
+        return _fail("missing_required", message)
     return _validate_sanitized_plan(draft, instruction)
 
 
@@ -53,8 +62,9 @@ def sanitize_plan_arguments(draft: WorkflowPlanDraft, instruction: str) -> Valid
 
     Scan unknown values for injection before discarding them. Empty identifiers
     are harmless model placeholders; false/zero/nonempty collections are not.
-    There is no allowlisted date field, so date/due_date are never executed.
+    Date aliases are accepted only for a milestone's allowlisted due_on field.
     """
+
     def strip_empty_identities(arguments):
         if isinstance(arguments, list):
             return all(strip_empty_identities(value) for value in arguments)
@@ -75,8 +85,10 @@ def sanitize_plan_arguments(draft: WorkflowPlanDraft, instruction: str) -> Valid
         if not strip_empty_identities(step.arguments):
             return _fail("untrusted_argument", "The plan included an identity or secret. Nothing was executed.")
     if contains_injection(instruction) or contains_injection(cleaned.model_dump_json()):
-        return _fail("prompt_injection", "The plan included instructions to override policy or payment status. "
-                     "Nothing was executed.")
+        return _fail(
+            "prompt_injection",
+            "The plan included instructions to override policy or payment status. Nothing was executed.",
+        )
     name_targets = {
         ActionType.CREATE_PROJECT: "project_name",
         ActionType.GET_PROJECT_STATUS: "project_name",
@@ -86,13 +98,22 @@ def sanitize_plan_arguments(draft: WorkflowPlanDraft, instruction: str) -> Valid
         ActionType.EXPLAIN_POLICY: "recipient_name",
         ActionType.RESUME_PAYOUT: "recipient_name",
         ActionType.ANALYZE_CONTRACT: "contract_name",
-        ActionType.CREATE_MILESTONES: "contract_name",
     }
     for step in cleaned.steps:
         arguments = step.arguments
         aliases = {"currency": "currency_code"}
         if step.action_type in name_targets:
             aliases["name"] = name_targets[step.action_type]
+        if step.action_type is ActionType.CREATE_MILESTONE:
+            # Legacy providers often add an unsolicited due_date. Only promote
+            # a date alias when it is actually grounded in the instruction.
+            aliases.update(
+                {
+                    key: "due_on"
+                    for key in ("date", "due_date")
+                    if isinstance(arguments.get(key), str) and arguments[key] in instruction
+                }
+            )
         for alias, target in aliases.items():
             value = arguments.get(alias)
             if value is None or value == "":
@@ -102,8 +123,9 @@ def sanitize_plan_arguments(draft: WorkflowPlanDraft, instruction: str) -> Valid
                 return _fail("ambiguous", f"Conflicting {alias} and {target} values need clarification.")
             arguments[target] = value
         step.arguments = {
-            key: value for key, value in arguments.items()
-            if key in ALLOWED_ARGUMENT_KEYS and value is not None
+            key: value
+            for key, value in arguments.items()
+            if key in ALLOWED_ARGUMENT_KEYS and value is not None and not (key == "milestones" and value == [])
         }
     for original, normalized in zip(draft.steps, cleaned.steps, strict=True):
         original.arguments = normalized.arguments
@@ -121,6 +143,35 @@ def _validate_sanitized_plan(draft: WorkflowPlanDraft, instruction: str) -> Vali
         return _fail("invalid_plan", "The plan repeats a step number. Nothing was executed.")
     by_sequence = {step.sequence: step for step in draft.steps}
     for step in draft.steps:
+        if step.action_type is ActionType.CREATE_MILESTONE:
+            parents = [
+                by_sequence[value]
+                for value in step.depends_on
+                if value in by_sequence and by_sequence[value].action_type is ActionType.CREATE_PROJECT
+            ]
+            if len(parents) != 1:
+                return _fail("missing_required", "Each direct milestone must reference exactly one project step.")
+            try:
+                item = MilestonePlanDraft.model_validate(
+                    {
+                        "name": step.arguments.get("milestone_name"),
+                        "amount": str(step.arguments.get("amount", "")),
+                        "currency_code": step.arguments.get("currency_code"),
+                        "trigger_kind": step.arguments.get("trigger_kind"),
+                        "due_on": step.arguments.get("due_on") or None,
+                    }
+                )
+            except ValidationError:
+                return _fail(
+                    "missing_required", "Each milestone needs a name, amount, currency, and valid date/trigger."
+                )
+            step.arguments["trigger_kind"] = item.trigger_kind or "on_event"
+            if item.due_on:
+                if item.due_on.isoformat() not in instruction:
+                    return _fail("missing_required", "State milestone due dates explicitly as ISO dates.")
+                step.arguments["due_on"] = item.due_on.isoformat()
+            else:
+                step.arguments.pop("due_on", None)
         if step.action_type is ActionType.PREPARE_PAYOUT and not step.requires_approval:
             return _fail(
                 "policy_bypass",
@@ -178,24 +229,39 @@ def _validate_sanitized_plan(draft: WorkflowPlanDraft, instruction: str) -> Vali
                     "A plan used USD even though the instruction did not state a currency.",
                     ["Which currency should this use? This workspace accepts USD."],
                 )
-            if not _amount_grounded(draft, instruction, step.sequence, amount):
-                return _fail(
-                    "ungrounded_amount",
-                    "A plan used an amount the instruction did not state. Nothing was executed.",
-                )
     for project in draft.steps:
         if project.action_type is not ActionType.CREATE_PROJECT:
             continue
         milestones = [
-            step for step in draft.steps
+            step
+            for step in draft.steps
             if step.action_type is ActionType.CREATE_MILESTONE and project.sequence in step.depends_on
         ]
+        expected = requested_milestone_count(instruction)
+        if (
+            expected is not None
+            and len(milestones) != expected
+            and len([s for s in draft.steps if s.action_type is ActionType.CREATE_PROJECT]) == 1
+        ):
+            return _fail("missing_required", "The plan must explicitly include every requested milestone.")
+        names = [str(step.arguments["milestone_name"]).strip().casefold() for step in milestones]
+        if len(names) != len(set(names)) or any(not name for name in names):
+            return _fail("invalid_plan", "Milestone names must be nonempty and unique within a project.")
         if milestones and (
-            any(step.arguments["currency_code"].upper() != project.arguments["currency_code"].upper()
-                for step in milestones)
+            any(
+                step.arguments["currency_code"].upper() != project.arguments["currency_code"].upper()
+                for step in milestones
+            )
             or sum(Decimal(step.arguments["amount"]) for step in milestones) != Decimal(project.arguments["amount"])
         ):
             return _fail("invalid_plan", "Milestone amounts must sum to the project total in the same currency.")
+    for step in draft.steps:
+        if step.action_type in MONEY_ACTIONS and not _amount_grounded(
+            draft, instruction, step.sequence, str(step.arguments["amount"])
+        ):
+            return _fail(
+                "ungrounded_amount", "A plan used an amount the instruction did not state. Nothing was executed."
+            )
     return ValidationResult(ok=True)
 
 
@@ -205,7 +271,16 @@ def _amount_grounded(draft: WorkflowPlanDraft, instruction: str, sequence: int, 
     step = next(item for item in draft.steps if item.sequence == sequence)
     if step.action_type is not ActionType.CREATE_MILESTONE or not step.depends_on:
         return False
-    parent = next((item for item in draft.steps if item.sequence == step.depends_on[0]), None)
+    if requested_milestone_count(instruction) is None:
+        return False
+    parent = next(
+        (
+            item
+            for item in draft.steps
+            if item.sequence in step.depends_on and item.action_type is ActionType.CREATE_PROJECT
+        ),
+        None,
+    )
     if parent is None or parent.action_type is not ActionType.CREATE_PROJECT:
         return False
     total = parent.arguments.get("amount")
@@ -214,7 +289,7 @@ def _amount_grounded(draft: WorkflowPlanDraft, instruction: str, sequence: int, 
     siblings = [
         item.arguments.get("amount")
         for item in draft.steps
-        if item.action_type is ActionType.CREATE_MILESTONE and item.depends_on[:1] == [parent.sequence]
+        if item.action_type is ActionType.CREATE_MILESTONE and parent.sequence in item.depends_on
     ]
     if not all(isinstance(item, str) for item in siblings):
         return False

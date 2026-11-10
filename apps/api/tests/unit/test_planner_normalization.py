@@ -9,7 +9,8 @@ from pydantic import SecretStr
 
 from app.core.config import AIProviderName, get_settings
 from app.modules.ai.providers import get_planner
-from app.modules.ai.providers.groq import GROQ_ENDPOINT
+from app.modules.ai.providers.gemini import GEMINI_ENDPOINT, GeminiPlanner
+from app.modules.ai.providers.groq import GROQ_ENDPOINT, GroqPlanner
 from app.modules.ai.providers.openai import OPENAI_ENDPOINT, OpenAIPlanner
 from app.modules.ai.schemas import ALLOWED_ARGUMENT_KEYS, WorkflowPlanDraft
 from app.modules.ai.service import _join
@@ -18,6 +19,27 @@ from tests.unit.test_agent_planner import CONTEXT
 
 PROJECT = "Create a $3,000 project called Website Redesign with three payment milestones for Acme."
 INVOICE = "Invoice Acme $100 for October."
+
+
+@pytest.mark.parametrize("planner_class,endpoint,model,format_type", [
+    (GroqPlanner, GROQ_ENDPOINT, "openai/gpt-oss-120b", "json_schema"),
+    (GeminiPlanner, GEMINI_ENDPOINT, "gemini-3.8-flash", "json_object"),
+])
+@pytest.mark.asyncio
+async def test_supported_models_are_sent_to_the_correct_provider(planner_class, endpoint, model, format_type):
+    async with respx.mock() as router:
+        route = router.post(endpoint).mock(return_value=httpx.Response(200, json={
+            "choices": [{"message": {"content": json.dumps(response_plan())}}],
+        }))
+        result = await planner_class("mock-key").plan_workflow(INVOICE, CONTEXT)
+    payload = json.loads(route.calls[0].request.content)
+    assert payload["model"] == model
+    assert payload["response_format"]["type"] == format_type
+    if format_type == "json_schema":
+        assert payload["response_format"]["json_schema"]["strict"] is True
+    assert result.draft is not None
+    assert validate_plan(result.draft, INVOICE).ok
+    assert model in result.provider_label
 
 
 def response_plan(project: bool = False) -> dict:

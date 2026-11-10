@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import date
 from enum import StrEnum
 from typing import Any
 
@@ -65,6 +66,9 @@ ALLOWED_ARGUMENT_KEYS = frozenset(
         "trigger_kind",
         "note",
         "name_is_default",
+        "milestones",
+        "milestone_count",
+        "due_on",
     }
 )
 
@@ -74,6 +78,16 @@ class EntityMention(BaseModel):
 
     kind: str = Field(pattern="^(customer|contractor|project|contract)$")
     name: str = Field(min_length=1, max_length=200)
+
+
+class MilestonePlanDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=200)
+    amount: str
+    currency_code: str
+    trigger_kind: str | None = Field(default=None, pattern="^(upfront|on_event|on_delivery)$")
+    due_on: date | None = None
 
 
 class PlanStepDraft(BaseModel):

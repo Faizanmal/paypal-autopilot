@@ -133,6 +133,12 @@ export function AgentConsole({ initialRuns }: { initialRuns: AgentRun[] }) {
                 <p className="font-medium">
                   {step.sequence}. {step.summary}
                 </p>
+                {step.action_type === "create_milestone" ? (
+                  <p data-testid="milestone-preview" className="mt-1 font-medium">
+                    {String(step.arguments.milestone_name)} · {String(step.arguments.currency_code)} {String(step.arguments.amount)}
+                    {step.arguments.due_on ? ` · Due ${String(step.arguments.due_on)}` : ""}
+                  </p>
+                ) : null}
                 <p className="text-muted-foreground">
                   {step.status}
                   {step.requires_approval ? " · approval required" : ""}

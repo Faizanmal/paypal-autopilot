@@ -12,10 +12,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
-from app.core.errors import AppError
+from app.core.errors import AppError, ValidationFailedError
 from app.core.money import money_to_api, parse_money
 from app.integrations.paypal.client import get_paypal_client
-from app.modules.ai.schemas import READ_ONLY_ACTIONS, ActionType
+from app.modules.ai.schemas import READ_ONLY_ACTIONS, ActionType, MilestonePlanDraft
 from app.modules.ai.security import display_provider_error
 from app.modules.autopilot.models import Invoice, ScheduledAction
 from app.modules.autopilot.reminders import INVOICE_REMINDER_JOB
@@ -82,10 +82,14 @@ async def execute_tool(
     try:
         if kind not in READ_ONLY_ACTIONS:
             policy_action = {
-                ActionType.CREATE_PROJECT: "project", ActionType.CREATE_MILESTONE: "milestone",
-                ActionType.CREATE_MILESTONES: "milestone", ActionType.DRAFT_INVOICE: "invoice",
-                ActionType.PREPARE_MILESTONE_INVOICE: "invoice", ActionType.SCHEDULE_REMINDER: "send_invoice",
-                ActionType.PREPARE_PAYOUT: "payout", ActionType.CREATE_APPROVAL: "payout",
+                ActionType.CREATE_PROJECT: "project",
+                ActionType.CREATE_MILESTONE: "milestone",
+                ActionType.CREATE_MILESTONES: "milestone",
+                ActionType.DRAFT_INVOICE: "invoice",
+                ActionType.PREPARE_MILESTONE_INVOICE: "invoice",
+                ActionType.SCHEDULE_REMINDER: "send_invoice",
+                ActionType.PREPARE_PAYOUT: "payout",
+                ActionType.CREATE_APPROVAL: "payout",
             }.get(kind, str(kind))
             await ensure_workflow_enabled(session, principal, policy_action)
         if kind is ActionType.CREATE_PROJECT:
@@ -111,7 +115,7 @@ async def execute_tool(
         if kind is ActionType.ANALYZE_CONTRACT:
             return await _analyze_contract(session, principal, inherited)
         if kind is ActionType.CREATE_MILESTONES:
-            return await _create_milestones(session, principal, inherited)
+            return await _create_milestones(session, principal, arguments, inherited)
         if kind is ActionType.GET_PROJECT_STATUS:
             return await _project_status(session, principal, inherited)
         if kind is ActionType.PREPARE_MILESTONE_INVOICE:
@@ -163,7 +167,7 @@ async def _milestone(session, principal, arguments, trusted) -> ToolOutcome:
     project_id = _uuid(trusted.get("project_id"))
     if project_id is None:
         return ToolOutcome(status="failed", error="The milestone has no project from an earlier step.")
-    name = str(arguments["milestone_name"])
+    name = str(arguments["milestone_name"]).strip()
     existing = await session.scalar(
         select(Milestone).where(
             Milestone.workspace_id == principal.workspace_id,
@@ -172,13 +176,26 @@ async def _milestone(session, principal, arguments, trusted) -> ToolOutcome:
         )
     )
     if existing is not None:
+        if (
+            existing.amount != Decimal(str(arguments["amount"]))
+            or existing.currency_code != str(arguments["currency_code"]).upper()
+            or existing.trigger_kind != str(arguments.get("trigger_kind") or "on_event")
+            or (existing.due_on.isoformat() if existing.due_on else None) != arguments.get("due_on")
+        ):
+            return ToolOutcome(status="failed", error="An existing milestone has different terms; review a new plan.")
         return ToolOutcome(status="succeeded", result=_milestone_result(existing))
     amount, currency = parse_money(str(arguments["amount"]), str(arguments["currency_code"]))
     milestone = await create_milestone(
         session,
         principal,
         project_id,
-        MilestoneCreate(name=name, amount=amount, currency_code=currency, trigger_kind=str(arguments["trigger_kind"])),
+        MilestoneCreate(
+            name=name,
+            amount=amount,
+            currency_code=currency,
+            trigger_kind=str(arguments.get("trigger_kind") or "on_event"),
+            due_on=arguments.get("due_on"),
+        ),
     )
     return ToolOutcome(status="succeeded", result=_milestone_result(milestone))
 
@@ -471,8 +488,56 @@ async def _analyze_contract(session, principal, trusted) -> ToolOutcome:
     )
 
 
-async def _create_milestones(session, principal, trusted) -> ToolOutcome:
+async def _create_milestones(session, principal, arguments, trusted) -> ToolOutcome:
     contract_id = _uuid(trusted.get("contract_id"))
+    if arguments.get("contract_name") and arguments.get("milestones"):
+        return ToolOutcome(status="failed", error="Choose contract-derived or direct milestones, not both.")
+    if not arguments.get("contract_name"):
+        project_id = _uuid(trusted.get("project_id"))
+        rows = arguments.get("milestones")
+        if project_id is None or not isinstance(rows, list) or not rows:
+            return ToolOutcome(status="failed", error="Review explicit milestones linked to an earlier project step.")
+        from pydantic import ValidationError
+
+        try:
+            items = [MilestonePlanDraft.model_validate(row) for row in rows]
+        except ValidationError:
+            return ToolOutcome(status="failed", error="The direct milestone proposal is invalid; review a new plan.")
+        detail = await get_project_detail(session, principal, project_id)
+        amounts = [parse_money(item.amount, item.currency_code) for item in items]
+        names = [item.name.strip().casefold() for item in items]
+        if (
+            sum((amount for amount, _currency in amounts), Decimal(0)) != detail.total_amount
+            or any(currency != detail.currency_code for _amount, currency in amounts)
+            or len(names) != len(set(names))
+            or any(not name for name in names)
+        ):
+            raise ValidationFailedError("Unique milestone amounts must sum to the project total in its currency.")
+        results = []
+        for item in items:
+            outcome = await _milestone(
+                session,
+                principal,
+                {
+                    "milestone_name": item.name,
+                    "amount": item.amount,
+                    "currency_code": item.currency_code,
+                    "trigger_kind": item.trigger_kind or "on_event",
+                    **({"due_on": item.due_on.isoformat()} if item.due_on else {}),
+                },
+                {"project_id": str(project_id)},
+            )
+            if outcome.status != "succeeded":
+                return outcome
+            results.append(outcome.result)
+        return ToolOutcome(
+            status="succeeded",
+            result={
+                "project_id": str(project_id),
+                "milestone_count": len(results),
+                "milestones": results,
+            },
+        )
     customer_id = _uuid(trusted.get("customer_id"))
     if contract_id is None or customer_id is None:
         return ToolOutcome(status="failed", error="The contract is not ready to turn into milestones.")
@@ -611,9 +676,15 @@ async def _resume_payout(session, principal, trusted) -> ToolOutcome:
         policy = await get_policy(session, principal.workspace_id)
         today, month, total = await committed_spend(session, principal.workspace_id, payout.currency_code)
         decision = evaluate(
-            policy, action_type="payout", amount=payout.amount, currency=payout.currency_code,
-            recipient=payout.recipient_email, mode="execute",
-            spent_today=today, spent_month=month, spent_total=total,
+            policy,
+            action_type="payout",
+            amount=payout.amount,
+            currency=payout.currency_code,
+            recipient=payout.recipient_email,
+            mode="execute",
+            spent_today=today,
+            spent_month=month,
+            spent_total=total,
             reserved_amount=payout.amount,
         )
         if not decision.allowed:

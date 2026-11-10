@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from app.modules.ai.providers.compatible import CompatibleChatPlanner
 
-GEMINI_PLANNING_MODEL = "gemini-2.0-flash"
+# Current compatibility example: https://aistudio.google.com/docs/openai
+GEMINI_PLANNING_MODEL = "gemini-3.8-flash"
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 
 

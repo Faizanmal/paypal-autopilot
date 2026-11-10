@@ -41,6 +41,8 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: '3.13'
+          # Background API must not hold the uv cache lock during post-job prune.
+          prune-cache: false
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -69,9 +71,11 @@ jobs:
       - name: Start API
         working-directory: apps/api
         run: |
-          uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/autopilot-api.log 2>&1 &
+          # Use the synced venv directly so no `uv` process holds the cache lock.
+          .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/autopilot-api.log 2>&1 &
+          echo $! > /tmp/autopilot-api.pid
           for attempt in $(seq 1 30); do
-            if curl --fail http://127.0.0.1:8000/ready; then exit 0; fi
+            if curl --fail --silent http://127.0.0.1:8000/ready; then exit 0; fi
             sleep 2
           done
           cat /tmp/autopilot-api.log
@@ -79,6 +83,13 @@ jobs:
       - name: Test browser workflows
         working-directory: apps/web
         run: npm run test:e2e
+      - name: Stop API
+        if: always()
+        run: |
+          if [ -f /tmp/autopilot-api.pid ]; then
+            kill "$(cat /tmp/autopilot-api.pid)" 2>/dev/null || true
+          fi
+          pkill -f 'uvicorn app.main:app' 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

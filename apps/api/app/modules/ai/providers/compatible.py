@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import json
 import re
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import httpx
 from pydantic import ValidationError
 
 from app.modules.ai.schemas import (
     ALLOWED_ARGUMENT_KEYS,
+    MilestonePlanDraft,
     PlanningFailure,
     WorkflowPlanDraft,
     WorkflowPlanningContext,
@@ -42,18 +43,39 @@ PLANNING_SYSTEM = (
     "Omit unused arguments (or use null if required by the response schema). "
     "For a vague request, use only supported steps with explicitly stated arguments; "
     "missing information will be clarified before execution."
+    " For a new project, emit one create_project step and one create_milestone step per milestone. "
+    "Each milestone needs milestone_name, amount, currency_code, and depends_on referencing the project step sequence. "
+    "Optional trigger_kind is upfront/on_event/on_delivery; optional due_on is an explicitly supplied ISO date. "
+    "If only a milestone count and project total are given, split the total evenly in cents, distributing any "
+    "remainder cents to the last milestones; name them Milestone 1, Milestone 2, etc. "
+    "The amounts must sum to the total. "
+    "create_milestones with contract_name is ONLY for a reviewed contract. A direct bulk create_milestones step "
+    "instead needs milestones: [{name, amount, currency_code, trigger_kind, due_on}] and a project-step dependency. "
+    "Never supply a project_id. Never claim to create milestones without explicit amounts."
 )
 
 
 def planning_json_schema() -> dict:
     schema = WorkflowPlanDraft.model_json_schema()
-    properties = {
-        key: {"type": ["integer" if key in {"days", "min_days_overdue"}
-                         else "boolean" if key == "name_is_default" else "string", "null"]}
+    properties: dict[str, Any] = {
+        key: {
+            "type": [
+                "integer"
+                if key in {"days", "min_days_overdue", "milestone_count"}
+                else "boolean"
+                if key == "name_is_default"
+                else "string",
+                "null",
+            ]
+        }
         for key in sorted(ALLOWED_ARGUMENT_KEYS)
     }
+    properties["milestones"] = {"type": ["array", "null"], "items": MilestonePlanDraft.model_json_schema()}
     schema["$defs"]["PlanStepDraft"]["properties"]["arguments"] = {
-        "type": "object", "properties": properties, "required": list(properties), "additionalProperties": False,
+        "type": "object",
+        "properties": properties,
+        "required": list(properties),
+        "additionalProperties": False,
     }
 
     def strict_objects(node):
@@ -96,9 +118,16 @@ class CompatibleChatPlanner:
             "model": self.model,
             "temperature": 0,
             "response_format": (
-                {"type": "json_schema", "json_schema": {
-                    "name": "workflow_plan", "strict": True, "schema": planning_json_schema(),
-                }} if self.supports_json_schema else {"type": "json_object"}
+                {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "workflow_plan",
+                        "strict": True,
+                        "schema": planning_json_schema(),
+                    },
+                }
+                if self.supports_json_schema
+                else {"type": "json_object"}
             ),
             "messages": [
                 {"role": "system", "content": PLANNING_SYSTEM},
