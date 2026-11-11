@@ -86,16 +86,16 @@ def expand_direct_milestones(draft: WorkflowPlanDraft, instruction: str) -> None
             if not isinstance(row, dict):
                 normalized_rows.append(row)
                 continue
-            item = dict(row)
+            normalized_item = dict(row)
             # Normalize harmless provider naming variations before applying
             # the same strict milestone schema for every provider.
-            if not item.get("name") and item.get("milestone_name"):
-                item["name"] = item["milestone_name"]
-            if not item.get("currency_code") and item.get("currency"):
-                item["currency_code"] = item["currency"]
-            if not item.get("currency_code"):
-                item["currency_code"] = currency
-            normalized_rows.append(item)
+            if not normalized_item.get("name") and normalized_item.get("milestone_name"):
+                normalized_item["name"] = normalized_item["milestone_name"]
+            if not normalized_item.get("currency_code") and normalized_item.get("currency"):
+                normalized_item["currency_code"] = normalized_item["currency"]
+            if not normalized_item.get("currency_code"):
+                normalized_item["currency_code"] = currency
+            normalized_rows.append(normalized_item)
         raw = normalized_rows
         try:
             items = [MilestonePlanDraft.model_validate(item) for item in raw]
@@ -104,17 +104,17 @@ def expand_direct_milestones(draft: WorkflowPlanDraft, instruction: str) -> None
                 "Each milestone needs a name, decimal amount, currency, and valid optional date/trigger."
             ) from exc
         # Explicit rows become the same primitive tool steps used by the fallback planner.
-        for item in items:
+        for milestone in items:
             copied = PlanStepDraft(
                 sequence=len(expanded) + 1,
                 action_type=ActionType.CREATE_MILESTONE,
-                summary=f"Add {item.name} for {item.currency_code} {item.amount}.",
+                summary=f"Add {milestone.name} for {milestone.currency_code} {milestone.amount}.",
                 arguments={
-                    "milestone_name": item.name,
-                    "amount": item.amount,
-                    "currency_code": item.currency_code,
-                    "trigger_kind": item.trigger_kind or "on_event",
-                    **({"due_on": item.due_on.isoformat()} if item.due_on else {}),
+                    "milestone_name": milestone.name,
+                    "amount": milestone.amount,
+                    "currency_code": milestone.currency_code,
+                    "trigger_kind": milestone.trigger_kind or "on_event",
+                    **({"due_on": milestone.due_on.isoformat()} if milestone.due_on else {}),
                 },
                 depends_on=list(dict.fromkeys([references[parent.sequence], *dependencies])),
                 preconditions=list(step.preconditions),

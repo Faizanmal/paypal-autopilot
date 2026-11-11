@@ -45,35 +45,47 @@ def _fail(code: str, message: str, clarifications: list[str] | None = None) -> V
     return ValidationResult(ok=False, code=code, message=message, clarifications=clarifications or [message])
 
 
+def _normalize_amount(arguments: dict) -> None:
+    amount = arguments.get("amount")
+    if isinstance(amount, int | float) and not isinstance(amount, bool):
+        arguments["amount"] = f"{amount:.2f}"
+
+
 def validate_plan(draft: WorkflowPlanDraft, instruction: str) -> ValidationResult:
     normalization = sanitize_plan_arguments(draft, instruction)
     if not normalization.ok:
         return normalization
     # Some compatible providers return a CREATE_MILESTONE step with its
     # proposed rows nested under ``milestones`` instead of scalar tool fields.
-    # Flatten a single row before the ordinary amount/currency validation.
-    projects = {step.sequence: step for step in draft.steps if step.action_type is ActionType.CREATE_PROJECT}
+    # Flatten nested rows and inherit parent currency before ordinary checks.
+    projects = [step for step in draft.steps if step.action_type is ActionType.CREATE_PROJECT]
+    for project in projects:
+        if not project.arguments.get("currency_code") and ("$" in instruction or re.search(r"\bUSD\b", instruction, re.I)):
+            project.arguments["currency_code"] = "USD"
+        _normalize_amount(project.arguments)
     for step in draft.steps:
         rows = step.arguments.get("milestones")
-        if step.action_type is not ActionType.CREATE_MILESTONE or not isinstance(rows, list):
+        if step.action_type is not ActionType.CREATE_MILESTONE:
             continue
-        name = str(step.arguments.get("milestone_name") or "").strip().casefold()
-        matches = [
-            row
-            for row in rows
-            if isinstance(row, dict)
-            and str(row.get("name") or row.get("milestone_name") or "").strip().casefold() == name
-        ]
-        if len(matches) != 1:
-            return _fail("missing_required", "Each milestone needs one explicit row with an amount.")
-        row = matches[0]
-        step.arguments["amount"] = row.get("amount")
-        step.arguments["currency_code"] = row.get("currency_code") or row.get("currency")
+        if isinstance(rows, list):
+            name = str(step.arguments.get("milestone_name") or "").strip().casefold()
+            matches = [row for row in rows if isinstance(row, dict) and str(row.get("name") or row.get("milestone_name") or "").strip().casefold() == name]
+            if len(matches) != 1:
+                return _fail("missing_required", "Each milestone needs one explicit row with an amount.")
+            row = matches[0]
+            step.arguments["amount"] = row.get("amount")
+            step.arguments["currency_code"] = row.get("currency_code") or row.get("currency")
+            step.arguments.pop("milestones", None)
+        if not step.arguments.get("currency_code"):
+            step.arguments["currency_code"] = step.arguments.get("currency")
         if not step.arguments["currency_code"]:
-            parents = [projects[value] for value in step.depends_on if value in projects]
+            parents = [project for project in projects if project.sequence in step.depends_on]
+            if not parents and not step.depends_on:
+                parents = [project for project in projects if project.sequence < step.sequence]
             if len(parents) == 1:
                 step.arguments["currency_code"] = parents[0].arguments.get("currency_code")
-        step.arguments.pop("milestones", None)
+        step.arguments.pop("currency", None)
+        _normalize_amount(step.arguments)
     try:
         expand_direct_milestones(draft, instruction)
     except (ValidationFailedError, ValidationError) as exc:
