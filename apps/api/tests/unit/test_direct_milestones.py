@@ -56,6 +56,29 @@ def test_mismatched_bulk_sum_is_rejected_before_materialization():
     assert "sum" in result.message
 
 
+def test_milestone_rows_on_individual_financial_step_are_used_for_validation():
+    plan = bulk_plan()
+    plan["steps"] = [plan["steps"][0]] + [
+        {
+            "sequence": index + 2,
+            "action_type": "create_milestone",
+            "summary": f"Create Milestone {index + 1}",
+            "arguments": {
+                "milestone_name": f"Milestone {index + 1}",
+                "milestones": [{"name": f"Milestone {index + 1}", "amount": "1000.00"}],
+            },
+            "depends_on": [1],
+            "requires_approval": False,
+            "read_only": False,
+        }
+        for index in range(3)
+    ]
+    draft = WorkflowPlanDraft.model_validate(plan)
+    assert validate_plan(draft, PROJECT).ok
+    assert [step.arguments["currency_code"] for step in draft.steps[1:]] == ["USD"] * 3
+    assert [step.arguments["amount"] for step in draft.steps[1:]] == ["1000.00"] * 3
+
+
 def test_cent_remainder_is_distributed_without_rounding_loss():
     plan = bulk_plan()
     plan["steps"][0]["arguments"]["amount"] = "3000.01"

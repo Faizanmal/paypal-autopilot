@@ -49,6 +49,31 @@ def validate_plan(draft: WorkflowPlanDraft, instruction: str) -> ValidationResul
     normalization = sanitize_plan_arguments(draft, instruction)
     if not normalization.ok:
         return normalization
+    # Some compatible providers return a CREATE_MILESTONE step with its
+    # proposed rows nested under ``milestones`` instead of scalar tool fields.
+    # Flatten a single row before the ordinary amount/currency validation.
+    projects = {step.sequence: step for step in draft.steps if step.action_type is ActionType.CREATE_PROJECT}
+    for step in draft.steps:
+        rows = step.arguments.get("milestones")
+        if step.action_type is not ActionType.CREATE_MILESTONE or not isinstance(rows, list):
+            continue
+        name = str(step.arguments.get("milestone_name") or "").strip().casefold()
+        matches = [
+            row
+            for row in rows
+            if isinstance(row, dict)
+            and str(row.get("name") or row.get("milestone_name") or "").strip().casefold() == name
+        ]
+        if len(matches) != 1:
+            return _fail("missing_required", "Each milestone needs one explicit row with an amount.")
+        row = matches[0]
+        step.arguments["amount"] = row.get("amount")
+        step.arguments["currency_code"] = row.get("currency_code") or row.get("currency")
+        if not step.arguments["currency_code"]:
+            parents = [projects[value] for value in step.depends_on if value in projects]
+            if len(parents) == 1:
+                step.arguments["currency_code"] = parents[0].arguments.get("currency_code")
+        step.arguments.pop("milestones", None)
     try:
         expand_direct_milestones(draft, instruction)
     except (ValidationFailedError, ValidationError) as exc:

@@ -67,7 +67,7 @@ Netlify. These steps do not publish anything by themselves.
    Review current plan costs; credits are not an unlimited hosting plan.
 2. In Render: **New → Blueprint**, connect the repository, review `render.yaml`.
    All backend resources share one region and private networking. Auto-deploy
-   on commit is off so schema changes can be rolled deliberately.
+   on commit is enabled (`autoDeployTrigger: commit`).
 3. Supply sync-false env vars on the API service:
    - `CORS_ORIGINS` — exact Netlify HTTPS origin
    - `PUBLIC_API_BASE_URL` — final Render API HTTPS origin

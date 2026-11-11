@@ -81,10 +81,22 @@ def expand_direct_milestones(draft: WorkflowPlanDraft, instruction: str) -> None
             raise ValidationFailedError("Provide between 1 and 12 explicit milestones.")
         # The project is the authoritative currency for its milestones. Some
         # providers omit currency from each row after displaying it in preview.
-        raw = [
-            ({**item, "currency_code": currency} if isinstance(item, dict) and not item.get("currency_code") else item)
-            for item in raw
-        ]
+        normalized_rows = []
+        for row in raw:
+            if not isinstance(row, dict):
+                normalized_rows.append(row)
+                continue
+            item = dict(row)
+            # Normalize harmless provider naming variations before applying
+            # the same strict milestone schema for every provider.
+            if not item.get("name") and item.get("milestone_name"):
+                item["name"] = item["milestone_name"]
+            if not item.get("currency_code") and item.get("currency"):
+                item["currency_code"] = item["currency"]
+            if not item.get("currency_code"):
+                item["currency_code"] = currency
+            normalized_rows.append(item)
+        raw = normalized_rows
         try:
             items = [MilestonePlanDraft.model_validate(item) for item in raw]
         except ValidationError as exc:

@@ -12,7 +12,7 @@ services:
     dockerCommand: /docker-entrypoint.sh api
     preDeployCommand: /docker-entrypoint.sh migrate
     healthCheckPath: /ready
-    autoDeployTrigger: "off"
+    autoDeployTrigger: commit
     envVars:
       - key: APP_ENV
         value: production
@@ -75,7 +75,7 @@ services:
     dockerfilePath: infra/docker/api.Dockerfile
     dockerContext: apps/api
     dockerCommand: /docker-entrypoint.sh worker
-    autoDeployTrigger: "off"
+    autoDeployTrigger: commit
     envVars: &worker-env
       - key: CELERY_WORKER_CONCURRENCY
         value: "1"
@@ -125,7 +125,7 @@ services:
     dockerfilePath: infra/docker/api.Dockerfile
     dockerContext: apps/api
     dockerCommand: /docker-entrypoint.sh scheduler
-    autoDeployTrigger: "off"
+    autoDeployTrigger: commit
     envVars: *worker-env
 
   - type: workflow
@@ -135,7 +135,7 @@ services:
     rootDir: apps/api
     buildCommand: uv sync --frozen --no-dev
     startCommand: .venv/bin/python -m app.workers.render_reports
-    autoDeployTrigger: "off"
+    autoDeployTrigger: commit
     envVars:
       - key: PYTHON_VERSION
         value: "3.13.18"
