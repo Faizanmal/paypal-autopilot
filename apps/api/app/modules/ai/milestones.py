@@ -79,6 +79,12 @@ def expand_direct_milestones(draft: WorkflowPlanDraft, instruction: str) -> None
             ]
         if not isinstance(raw, list) or not raw or len(raw) > 12:
             raise ValidationFailedError("Provide between 1 and 12 explicit milestones.")
+        # The project is the authoritative currency for its milestones. Some
+        # providers omit currency from each row after displaying it in preview.
+        raw = [
+            ({**item, "currency_code": currency} if isinstance(item, dict) and not item.get("currency_code") else item)
+            for item in raw
+        ]
         try:
             items = [MilestonePlanDraft.model_validate(item) for item in raw]
         except ValidationError as exc:

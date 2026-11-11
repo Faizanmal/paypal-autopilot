@@ -17,13 +17,17 @@ async def test_exact_live_prompt_creates_three_direct_milestones(app, clean_db, 
     async with await _client(app) as client:
         await _register(client, "milestones.qa@example.com", "Direct milestones QA")
         customer = await _customer(client)
+        rows = milestone_rows() if explicit else None
+        if rows:
+            for row in rows:
+                row.pop("currency_code", None)
         with respx.mock() as router:
             router.post(OPENAI_ENDPOINT).mock(
                 return_value=httpx.Response(
                     200,
                     json={
                         "choices": [
-                            {"message": {"content": json.dumps(bulk_plan(milestone_rows() if explicit else None))}}
+                            {"message": {"content": json.dumps(bulk_plan(rows))}}
                         ],
                     },
                 )
