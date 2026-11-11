@@ -118,6 +118,7 @@ class BillingProgress(BaseModel):
 class ProjectMilestone(MilestoneOut):
     invoice_id: uuid.UUID | None = None
     paypal_invoice_id: str | None = None
+    invoice_status: str | None = None
 
 
 class ProjectDetail(ProjectOut):

@@ -60,6 +60,7 @@ export type Milestone = {
   acceptance_condition: string | null;
   invoice_id?: string | null;
   paypal_invoice_id?: string | null;
+  invoice_status?: string | null;
 };
 
 export type BillingProgress = {

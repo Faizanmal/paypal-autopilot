@@ -19,8 +19,14 @@ test("preview stays inert and confirmation creates the project exactly once", as
   await page.getByLabel("Instruction", { exact: true }).fill(
     "Create a $3,000 project called Website Redesign with three payment milestones for Acme.",
   );
+  const previewResponse = page.waitForResponse((response) =>
+    response.url().endsWith("/api/v1/agent/plans") && response.request().method() === "POST");
   await page.getByRole("button", { name: "Preview plan", exact: true }).click();
-  await expect(page.getByText("Status: pending_confirmation", { exact: true })).toBeVisible();
+  const response = await previewResponse;
+  expect(response.status()).toBe(201);
+  const preview = await response.json();
+  expect(preview.status, JSON.stringify(preview)).toBe("pending_confirmation");
+  await expect(page.getByText("Status: pending_confirmation", { exact: true })).toBeVisible({ timeout: 30_000 });
   const before = await page.request.get("/api/v1/projects");
   expect((await before.json()).items).toHaveLength(0);
   await expect(page.getByText("3000.00", { exact: true })).toBeVisible();

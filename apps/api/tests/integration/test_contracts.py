@@ -310,6 +310,18 @@ async def test_contract_review_milestones_invoice_and_isolation(app, clean_db, p
             invoices = paypal.post(f"{BASE}/v2/invoicing/invoices").mock(
                 return_value=httpx.Response(201, json={"id": "INV2-MILESTONE", "status": "DRAFT"})
             )
+            paypal.get(f"{BASE}/v2/invoicing/invoices/INV2-MILESTONE").mock(
+                return_value=httpx.Response(
+                    200,
+                    json={
+                        "id": "INV2-MILESTONE",
+                        "status": "DRAFT",
+                        "links": [
+                            {"rel": "payer-view", "href": "https://www.sandbox.paypal.com/invoice/p/INV2-MILESTONE"}
+                        ],
+                    },
+                )
+            )
             drafted = await client.post(f"/api/v1/milestones/{milestone_id}/invoice")
             duplicate = await client.post(f"/api/v1/milestones/{milestone_id}/invoice")
             assert invoices.call_count == 1
@@ -318,6 +330,11 @@ async def test_contract_review_milestones_invoice_and_isolation(app, clean_db, p
         assert drafted.json()["id"] == duplicate.json()["id"]
         assert drafted.json()["paypal_invoice_id"] == "INV2-MILESTONE"
         assert drafted.json()["milestone_id"] == milestone_id
+        assert drafted.json()["hosted_url"] == "https://www.sandbox.paypal.com/invoice/p/INV2-MILESTONE"
+        audit = (await client.get("/api/v1/audit-logs")).json()["items"]
+        draft_event = next(item for item in audit if item["entity_id"] == drafted.json()["id"])
+        assert draft_event["approval_id"] == "not required: draft"
+        assert draft_event["policy_evaluated"] == "policy: invoice_draft_allowed"
         assert drafted.json()["amount"] == project["milestones"][0]["amount"]
         assert await _count(Invoice) == 1
         request_body = invoices.calls[0].request.read().decode()
@@ -327,6 +344,8 @@ async def test_contract_review_milestones_invoice_and_isolation(app, clean_db, p
         linked = await client.get(f"/api/v1/projects/{project['id']}")
         assert linked.json()["milestones"][0]["status"] == "invoiced"
         assert linked.json()["milestones"][0]["paypal_invoice_id"] == "INV2-MILESTONE"
+        assert linked.json()["milestones"][0]["invoice_id"] == drafted.json()["id"]
+        assert linked.json()["milestones"][0]["invoice_status"] == "draft"
 
         app.state.paypal_webhook_verifier = _AcceptWebhook()
         async with respx.mock(assert_all_called=False) as paypal:

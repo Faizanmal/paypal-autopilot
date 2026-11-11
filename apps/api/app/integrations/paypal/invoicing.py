@@ -7,7 +7,7 @@ from typing import Any
 
 from app.core.logging import _redact
 from app.core.money import money_to_api
-from app.integrations.paypal.client import PayPalCall, PayPalClient
+from app.integrations.paypal.client import PayPalCall, PayPalClient, PayPalError
 
 _INVOICE_PATH_MARKER = "/v2/invoicing/invoices/"
 
@@ -117,9 +117,13 @@ class InvoicingApi:
         )
         invoice_id = invoice_id_from_create_body(result.body)
         # Sandbox often returns only {"rel":"self","href":".../INV2-...","method":"GET"}.
-        if invoice_id and result.body.get("id") != invoice_id:
-            fetched = await self.get_invoice(invoice_id)
-            return fetched
+        if invoice_id and (result.body.get("id") != invoice_id or hosted_url(result.body) is None):
+            try:
+                return await self.get_invoice(invoice_id)
+            except PayPalError:
+                # Preserve the successfully created draft if the follow-up
+                # read is temporarily unavailable; its payer link can sync later.
+                pass
         result.body = {**result.body, "_summary": _summary(result.body)}
         return result
 
@@ -153,7 +157,6 @@ class InvoicingApi:
             return result
         result.body = {**result.body, "_summary": _summary(result.body)}
         return result
-
 
     async def remind(self, paypal_invoice_id: str, *, idempotency_key: str) -> PayPalCall:
         return await self._client.call(

@@ -32,21 +32,15 @@ from app.modules.trustflow.transitions import assert_transition, refresh_project
 
 async def list_customers(session: AsyncSession, principal: Principal) -> list[Customer]:
     rows = await session.scalars(
-        select(Customer)
-        .where(Customer.workspace_id == principal.workspace_id)
-        .order_by(Customer.created_at.desc())
+        select(Customer).where(Customer.workspace_id == principal.workspace_id).order_by(Customer.created_at.desc())
     )
     return list(rows)
 
 
-async def create_customer(
-    session: AsyncSession, principal: Principal, body: CustomerCreate
-) -> Customer:
+async def create_customer(session: AsyncSession, principal: Principal, body: CustomerCreate) -> Customer:
     email = body.email.lower()
     existing = await session.scalar(
-        select(Customer.id).where(
-            Customer.workspace_id == principal.workspace_id, Customer.email == email
-        )
+        select(Customer.id).where(Customer.workspace_id == principal.workspace_id, Customer.email == email)
     )
     if existing is not None:
         raise ConflictError("A customer with that email already exists in this workspace.")
@@ -114,9 +108,7 @@ async def archive_customer(session: AsyncSession, principal: Principal, customer
     return customer
 
 
-async def _customer_in_workspace(
-    session: AsyncSession, principal: Principal, customer_id: uuid.UUID
-) -> Customer:
+async def _customer_in_workspace(session: AsyncSession, principal: Principal, customer_id: uuid.UUID) -> Customer:
     customer = await session.scalar(
         select(Customer).where(Customer.id == customer_id, Customer.workspace_id == principal.workspace_id)
     )
@@ -134,14 +126,10 @@ async def list_contractors(session: AsyncSession, principal: Principal) -> list[
     return list(rows)
 
 
-async def create_contractor(
-    session: AsyncSession, principal: Principal, body: ContractorCreate
-) -> Contractor:
+async def create_contractor(session: AsyncSession, principal: Principal, body: ContractorCreate) -> Contractor:
     email = body.email.lower()
     existing = await session.scalar(
-        select(Contractor.id).where(
-            Contractor.workspace_id == principal.workspace_id, Contractor.email == email
-        )
+        select(Contractor.id).where(Contractor.workspace_id == principal.workspace_id, Contractor.email == email)
     )
     if existing is not None:
         raise ConflictError("A contractor with that email already exists in this workspace.")
@@ -166,13 +154,9 @@ async def create_contractor(
     return contractor
 
 
-async def _project_in_workspace(
-    session: AsyncSession, principal: Principal, project_id: uuid.UUID
-) -> Project:
+async def _project_in_workspace(session: AsyncSession, principal: Principal, project_id: uuid.UUID) -> Project:
     project = await session.scalar(
-        select(Project).where(
-            Project.id == project_id, Project.workspace_id == principal.workspace_id
-        )
+        select(Project).where(Project.id == project_id, Project.workspace_id == principal.workspace_id)
     )
     if project is None:
         raise NotFoundError("Project not found.")
@@ -181,16 +165,12 @@ async def _project_in_workspace(
 
 async def list_projects(session: AsyncSession, principal: Principal) -> list[Project]:
     rows = await session.scalars(
-        select(Project)
-        .where(Project.workspace_id == principal.workspace_id)
-        .order_by(Project.created_at.desc())
+        select(Project).where(Project.workspace_id == principal.workspace_id).order_by(Project.created_at.desc())
     )
     return list(rows)
 
 
-async def create_project(
-    session: AsyncSession, principal: Principal, body: ProjectCreate
-) -> Project:
+async def create_project(session: AsyncSession, principal: Principal, body: ProjectCreate) -> Project:
     await ensure_workflow_enabled(session, principal, "project")
     amount, currency = parse_money(body.total_amount, body.currency_code)
     if body.starts_on is not None and body.ends_on is not None and body.ends_on < body.starts_on:
@@ -219,15 +199,18 @@ async def create_project(
         entity_id=project.id,
         workspace_id=principal.workspace_id,
         actor_user_id=principal.user_id,
-        details={"currency_code": currency},
+        details={
+            "currency_code": currency,
+            "approval_id": "not_required",
+            "policy_evaluated": "project_creation",
+            "paypal_operation": "not_called",
+        },
     )
     await session.commit()
     return project
 
 
-async def list_milestones(
-    session: AsyncSession, principal: Principal, project_id: uuid.UUID
-) -> list[Milestone]:
+async def list_milestones(session: AsyncSession, principal: Principal, project_id: uuid.UUID) -> list[Milestone]:
     await _project_in_workspace(session, principal, project_id)
     rows = await session.scalars(
         select(Milestone)
@@ -282,7 +265,13 @@ async def create_milestone(
         entity_id=milestone.id,
         workspace_id=principal.workspace_id,
         actor_user_id=principal.user_id,
-        details={"project_id": str(project.id), "sequence": milestone.sequence},
+        details={
+            "project_id": str(project.id),
+            "sequence": milestone.sequence,
+            "approval_id": "not_required",
+            "policy_evaluated": "milestone_creation",
+            "paypal_operation": "not_called",
+        },
     )
     await session.commit()
     return milestone
@@ -319,6 +308,7 @@ async def get_project_detail(session: AsyncSession, principal: Principal, projec
                 update={
                     "invoice_id": None if invoice is None else invoice.id,
                     "paypal_invoice_id": None if invoice is None else invoice.paypal_invoice_id,
+                    "invoice_status": None if invoice is None else invoice.status,
                 }
             )
         )

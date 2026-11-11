@@ -50,11 +50,9 @@ export function MilestoneActions({
             Cancel
           </Button>
         ) : null}
-        {status === "accepted" ? (
-          <Button type="button" disabled={pending} onClick={() => run(`/api/v1/milestones/${milestoneId}/invoice`)}>
-            Prepare invoice
-          </Button>
-        ) : null}
+        <Button type="button" disabled={pending || status !== "accepted"} onClick={() => run(`/api/v1/milestones/${milestoneId}/invoice`)}>
+          Create draft invoice
+        </Button>
       </div>
       {error ? (
         <p role="alert" className="text-sm text-destructive">

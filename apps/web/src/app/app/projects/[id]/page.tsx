@@ -91,8 +91,11 @@ export default async function ProjectDetailPage({ params }: { params: Promise<{ 
               {milestone.acceptance_condition ? (
                 <p className="text-sm text-muted-foreground">Acceptance: {milestone.acceptance_condition}</p>
               ) : null}
-              {milestone.paypal_invoice_id ? (
-                <p className="text-sm text-muted-foreground">PayPal invoice {milestone.paypal_invoice_id}</p>
+              {milestone.invoice_id ? (
+                <p className="text-sm text-muted-foreground">
+                  Invoice {milestone.invoice_id} · {milestone.invoice_status ?? "draft"}
+                  {milestone.paypal_invoice_id ? ` · PayPal ${milestone.paypal_invoice_id}` : ""}
+                </p>
               ) : null}
             </div>
             <MilestoneActions milestoneId={milestone.id} status={milestone.status} />

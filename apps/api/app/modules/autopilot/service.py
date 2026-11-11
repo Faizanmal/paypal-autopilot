@@ -66,9 +66,7 @@ def _paypal_failure(exc: PayPalError) -> AppError:
 
 def _require_paypal(settings: Settings) -> None:
     if not settings.paypal_configured:
-        raise PayPalNotConfiguredError(
-            "PayPal sandbox credentials are not configured. No PayPal call was made."
-        )
+        raise PayPalNotConfiguredError("PayPal sandbox credentials are not configured. No PayPal call was made.")
 
 
 async def _customer(session: AsyncSession, principal: Principal, customer_id: uuid.UUID) -> Customer:
@@ -128,9 +126,7 @@ async def create_invoice(
     milestone = None
     if body.milestone_id is not None:
         milestone = await session.scalar(
-            select(Milestone).where(
-                Milestone.id == body.milestone_id, Milestone.workspace_id == principal.workspace_id
-            )
+            select(Milestone).where(Milestone.id == body.milestone_id, Milestone.workspace_id == principal.workspace_id)
         )
         if milestone is None:
             raise NotFoundError("Milestone not found.")
@@ -255,6 +251,8 @@ async def create_invoice(
         details=financial_details(
             status=invoice.status,
             proposed_by_ai=False,
+            approval_id="not required: draft",
+            policy_evaluated="policy: invoice_draft_allowed",
             paypal_operation=f"invoicing.create:{paypal_id}",
             paypal_invoice_id=paypal_id,
             provider_status=invoice.provider_status,
@@ -341,9 +339,7 @@ async def send_invoice(
         raise ConflictError("This invoice has not been created in PayPal.")
     key = invoice.idempotency_key or str(invoice.id)
     try:
-        send_result = await InvoicingApi(client).send_invoice(
-            invoice.paypal_invoice_id, idempotency_key=f"{key}:send"
-        )
+        send_result = await InvoicingApi(client).send_invoice(invoice.paypal_invoice_id, idempotency_key=f"{key}:send")
     except PayPalError as exc:
         invoice.last_provider_error = exc.safe_message
         await session.commit()
@@ -364,9 +360,7 @@ async def send_invoice(
             status=invoice.status,
             proposed_by_ai=False,
             paypal_operation=(
-                f"invoicing.send:{invoice.paypal_invoice_id}"
-                if invoice.paypal_invoice_id
-                else "invoicing.send"
+                f"invoicing.send:{invoice.paypal_invoice_id}" if invoice.paypal_invoice_id else "invoicing.send"
             ),
             paypal_invoice_id=invoice.paypal_invoice_id,
             provider_status=invoice.provider_status,
@@ -455,9 +449,7 @@ async def sync_known_invoices(
 
 async def _ensure_payment(session: AsyncSession, invoice: Invoice, external_id: str) -> None:
     existing = await session.scalar(
-        select(PaymentRecord.id).where(
-            PaymentRecord.invoice_id == invoice.id, PaymentRecord.external_id == external_id
-        )
+        select(PaymentRecord.id).where(PaymentRecord.invoice_id == invoice.id, PaymentRecord.external_id == external_id)
     )
     if existing is not None:
         return
@@ -485,9 +477,7 @@ async def list_orders(session: AsyncSession, principal: Principal) -> list[Check
 
 async def _order(session: AsyncSession, principal: Principal, order_id: uuid.UUID) -> CheckoutOrder:
     order = await session.scalar(
-        select(CheckoutOrder).where(
-            CheckoutOrder.id == order_id, CheckoutOrder.workspace_id == principal.workspace_id
-        )
+        select(CheckoutOrder).where(CheckoutOrder.id == order_id, CheckoutOrder.workspace_id == principal.workspace_id)
     )
     if order is None:
         raise NotFoundError("Checkout order not found.")
