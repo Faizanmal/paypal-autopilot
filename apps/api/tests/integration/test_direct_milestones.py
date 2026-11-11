@@ -26,9 +26,7 @@ async def test_exact_live_prompt_creates_three_direct_milestones(app, clean_db, 
                 return_value=httpx.Response(
                     200,
                     json={
-                        "choices": [
-                            {"message": {"content": json.dumps(bulk_plan(rows))}}
-                        ],
+                        "choices": [{"message": {"content": json.dumps(bulk_plan(rows))}}],
                     },
                 )
             )
@@ -76,3 +74,39 @@ async def test_mismatched_sum_cannot_create_a_project(app, clean_db, monkeypatch
         assert response.json()["status"] == "rejected", response.text
         assert response.json()["error_code"] == "invalid_plan"
         assert (await client.get("/api/v1/projects")).json()["items"] == []
+
+
+async def test_groq_scalar_milestones_recover_missing_project_total(app, clean_db, monkeypatch):
+    monkeypatch.setattr("app.modules.ai.service.get_planner", lambda _settings: OpenAIPlanner("mock-key"))
+    plan = bulk_plan()
+    plan["steps"][0]["arguments"].pop("amount")
+    plan["steps"] = [plan["steps"][0]] + [
+        {
+            "sequence": index + 2,
+            "action_type": "create_milestone",
+            "summary": f"Create Milestone {index + 1}",
+            "arguments": {"milestone_name": f"Milestone {index + 1}", "amount": 1000.0, "currency_code": "USD"},
+            "depends_on": [1],
+            "requires_approval": False,
+            "read_only": False,
+        }
+        for index in range(3)
+    ]
+    async with await _client(app) as client:
+        await _register(client, "milestones.groq@example.com", "Groq scalar milestones")
+        customer = await _customer(client)
+        with respx.mock() as router:
+            router.post(OPENAI_ENDPOINT).mock(
+                return_value=httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(plan)}}]})
+            )
+            preview = await client.post("/api/v1/agent/plans", json={"instruction": PROJECT})
+        assert preview.status_code == 201, preview.text
+        assert preview.json()["status"] == "pending_confirmation"
+        assert preview.json()["steps"][0]["arguments"]["amount"] == "3000.00"
+        confirmed = await client.post(f"/api/v1/agent/runs/{preview.json()['id']}/confirm")
+        assert confirmed.status_code == 200, confirmed.text
+        project = (await client.get("/api/v1/projects")).json()["items"][0]
+        assert project["customer_id"] == customer["id"]
+        detail = (await client.get(f"/api/v1/projects/{project['id']}")).json()
+        assert len(detail["milestones"]) == 3
+        assert sum(Decimal(item["amount"]) for item in detail["milestones"]) == Decimal("3000.00")

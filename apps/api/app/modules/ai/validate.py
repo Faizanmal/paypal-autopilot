@@ -51,6 +51,14 @@ def _normalize_amount(arguments: dict) -> None:
         arguments["amount"] = f"{amount:.2f}"
 
 
+def _instruction_money_values(instruction: str) -> list[str]:
+    pattern = re.compile(r"(?:\$\s*(\d[\d,]*(?:\.\d{1,2})?)|\b(\d[\d,]*(?:\.\d{1,2})?)\s*USD\b)", re.I)
+    return [
+        format(Decimal((match.group(1) or match.group(2)).replace(",", "")).quantize(Decimal("0.01")), "f")
+        for match in pattern.finditer(instruction)
+    ]
+
+
 def validate_plan(draft: WorkflowPlanDraft, instruction: str) -> ValidationResult:
     normalization = sanitize_plan_arguments(draft, instruction)
     if not normalization.ok:
@@ -60,7 +68,9 @@ def validate_plan(draft: WorkflowPlanDraft, instruction: str) -> ValidationResul
     # Flatten nested rows and inherit parent currency before ordinary checks.
     projects = [step for step in draft.steps if step.action_type is ActionType.CREATE_PROJECT]
     for project in projects:
-        if not project.arguments.get("currency_code") and ("$" in instruction or re.search(r"\bUSD\b", instruction, re.I)):
+        if not project.arguments.get("currency_code") and (
+            "$" in instruction or re.search(r"\bUSD\b", instruction, re.I)
+        ):
             project.arguments["currency_code"] = "USD"
         _normalize_amount(project.arguments)
     for step in draft.steps:
@@ -69,7 +79,12 @@ def validate_plan(draft: WorkflowPlanDraft, instruction: str) -> ValidationResul
             continue
         if isinstance(rows, list):
             name = str(step.arguments.get("milestone_name") or "").strip().casefold()
-            matches = [row for row in rows if isinstance(row, dict) and str(row.get("name") or row.get("milestone_name") or "").strip().casefold() == name]
+            matches = [
+                row
+                for row in rows
+                if isinstance(row, dict)
+                and str(row.get("name") or row.get("milestone_name") or "").strip().casefold() == name
+            ]
             if len(matches) != 1:
                 return _fail("missing_required", "Each milestone needs one explicit row with an amount.")
             row = matches[0]
@@ -86,6 +101,52 @@ def validate_plan(draft: WorkflowPlanDraft, instruction: str) -> ValidationResul
                 step.arguments["currency_code"] = parents[0].arguments.get("currency_code")
         step.arguments.pop("currency", None)
         _normalize_amount(step.arguments)
+    # Recover a missing project total only from an explicit instruction value
+    # or a complete, same-currency set of its child milestone amounts.
+    explicit_totals = _instruction_money_values(instruction)
+    for project in projects:
+        children = [
+            step
+            for step in draft.steps
+            if step.action_type is ActionType.CREATE_MILESTONE and project.sequence in step.depends_on
+        ]
+        child_currencies = {str(step.arguments.get("currency_code", "")).upper() for step in children}
+        try:
+            child_sum = sum(
+                (
+                    Decimal(str(step.arguments["amount"]))
+                    for step in children
+                    if step.arguments.get("amount") is not None
+                ),
+                Decimal(0),
+            )
+        except Exception:
+            child_sum = None
+        if not project.arguments.get("amount"):
+            if len(explicit_totals) == 1:
+                project.arguments["amount"] = explicit_totals[0]
+            elif (
+                not explicit_totals
+                and children
+                and child_sum is not None
+                and len(child_currencies) == 1
+                and "" not in child_currencies
+            ):
+                project.arguments["amount"] = f"{child_sum:.2f}"
+                project.arguments["currency_code"] = next(iter(child_currencies))
+            else:
+                return _fail("missing_required", "State one project total or provide milestones with one currency.")
+        elif len(explicit_totals) == 1 and Decimal(str(project.arguments["amount"])) != Decimal(explicit_totals[0]):
+            return _fail(
+                "ambiguous", "The project total differs from the amount in the instruction; clarify the total."
+            )
+        if (
+            children
+            and len(child_currencies) == 1
+            and "" not in child_currencies
+            and child_sum != Decimal(str(project.arguments["amount"]))
+        ):
+            return _fail("invalid_plan", "Milestone amounts must sum to the project total in the same currency.")
     try:
         expand_direct_milestones(draft, instruction)
     except (ValidationFailedError, ValidationError) as exc:
